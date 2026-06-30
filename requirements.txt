@@ -1,0 +1,6 @@
+numpy
+flask
+requests
+beautifulsoup4
+python-dotenv
+websocket-client
