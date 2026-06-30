@@ -97,7 +97,10 @@ class BaseChannel:
         raise NotImplementedError
 
     def _execute_signal(self, signal: dict):
-        """Execute a trading signal."""
+        """Execute a trading signal or send to Telegram (SIGNAL_ONLY mode)."""
+        from config import SIGNAL_ONLY, ENTRY_PERCENT
+        from integrations.telegram_notifier import notifier
+
         pair = signal["pair"]
         direction = signal["direction"]
         score = signal["score"]
@@ -109,21 +112,43 @@ class BaseChannel:
 
         if self.protections.check_trap_zone():
             logger.debug(f"{self.name}: Trap zone detected, skipping")
+            notifier.notify_veto(self.name, pair, "Trap Zone")
             return
 
         if self.forex_factory and self.forex_factory.should_block(pair):
             logger.info(f"{self.name}: ForexFactory block for {pair}")
+            notifier.notify_veto(self.name, pair, "ForexFactory - Evento HIGH")
             return
 
         if not self.protections.can_open_order():
             return
 
-        # Calculate entry amount (2% of balance)
+        # Send signal to Telegram
+        notifier.notify_signal(self.name, pair, direction, score, self.min_score)
+
+        # Record signal
+        signal_record = {
+            "time": datetime.now().isoformat(),
+            "pair": pair,
+            "direction": direction,
+            "score": score,
+            "channel": self.name,
+            "executed": not SIGNAL_ONLY
+        }
+        self.last_signal = signal_record
+        self.signals_history.append(signal_record)
+
+        # If SIGNAL_ONLY mode, just log and return (no execution)
+        if SIGNAL_ONLY:
+            logger.info(f"SIGNAL (no exec): {self.name} | {pair} | {direction} | Score: {score}")
+            self.protections.record_trade(pair, self.name)
+            return
+
+        # === EXECUTION MODE ===
         balance = self.iq.get_balance()
         if balance <= 0:
             return
 
-        from config import ENTRY_PERCENT
         amount = round(balance * ENTRY_PERCENT, 2)
         amount = max(1.0, amount)  # Minimum $1
 
@@ -135,20 +160,10 @@ class BaseChannel:
 
             if success and order_id:
                 self.protections.record_trade(pair, self.name)
+                signal_record["amount"] = amount
+                signal_record["order_id"] = order_id
 
-                # Record signal
-                signal_record = {
-                    "time": datetime.now().isoformat(),
-                    "pair": pair,
-                    "direction": direction,
-                    "score": score,
-                    "amount": amount,
-                    "channel": self.name,
-                    "order_id": order_id
-                }
-                self.last_signal = signal_record
-                self.signals_history.append(signal_record)
-
+                notifier.notify_trade_opened(self.name, pair, direction, amount)
                 logger.info(f"SIGNAL EXECUTED: {self.name} | {pair} | {direction} | Score: {score} | ${amount:.2f}")
 
                 # Wait for result
@@ -159,10 +174,13 @@ class BaseChannel:
                 self.protections.record_result(win, pair, self.name, amount)
                 self.protections.set_order_closed()
 
+                new_balance = self.iq.get_balance()
+                notifier.notify_trade_result(pair, direction, "WIN" if win else "LOSS", profit if win else amount, new_balance)
+
                 if win:
-                    logger.info(f"✅ WIN: {pair} ({self.name}) +${profit:.2f}")
+                    logger.info(f"\u2705 WIN: {pair} ({self.name}) +${profit:.2f}")
                 else:
-                    logger.warning(f"❌ LOSS: {pair} ({self.name}) -${amount:.2f}")
+                    logger.warning(f"\u274c LOSS: {pair} ({self.name}) -${amount:.2f}")
             else:
                 self.protections.set_order_closed()
 

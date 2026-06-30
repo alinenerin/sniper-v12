@@ -9,6 +9,7 @@ POLYGON_KEY = os.environ.get("POLYGON_KEY", "gXySF0ojKao907z3vKOtpxr8opt0cbLx")
 FINNHUB_KEY = os.environ.get("FINNHUB_KEY", "d8p5sbpr01qp954vdn3gd8p5sbpr01qp954vdn40")
 
 ENTRY_PERCENT = float(os.environ.get("ENTRY_PERCENT", "0.02"))
+SIGNAL_ONLY = os.environ.get("SIGNAL_ONLY", "true").lower() == "true"  # Only send signals, no execution
 DAILY_STOP = int(os.environ.get("DAILY_STOP", "4"))
 SEQ_STOP = int(os.environ.get("SEQ_STOP", "3"))
 SEQ_PAUSE = int(os.environ.get("SEQ_PAUSE", "30"))
