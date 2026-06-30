@@ -1,0 +1,25 @@
+services:
+  - type: worker
+    name: sniper-v12-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: IQ_EMAIL
+        value: laiane.aline@gmail.com
+      - key: IQ_PASSWORD
+        value: alineegui95
+      - key: IQ_MODE
+        value: PRACTICE
+      - key: TWELVE_DATA_KEY
+        value: 1be0b948fb1c48bb997e350c542edafd
+      - key: POLYGON_KEY
+        value: gXySF0ojKao907z3vKOtpxr8opt0cbLx
+      - key: FINNHUB_KEY
+        value: d8p5sbpr01qp954vdn3gd8p5sbpr01qp954vdn40
+      - key: ENTRY_PERCENT
+        value: "0.02"
+      - key: PORT
+        value: "8080"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
