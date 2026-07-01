@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class IQOptionClient:
-    """Wrapper for IQ Option API connection."""
+    """Wrapper for IQ Option API connection with robust reconnection."""
 
     def __init__(self, email, password, mode="PRACTICE"):
         self.email = email
@@ -16,35 +16,61 @@ class IQOptionClient:
         self.api = None
         self.connected = False
         self._lock = threading.Lock()
+        self._reconnect_lock = threading.Lock()
+        self._last_reconnect = 0
+        self._reconnect_cooldown = 5  # seconds between reconnect attempts
 
     def connect(self) -> bool:
         """Connect to IQ Option."""
         try:
             from iqoptionapi.stable_api import IQ_Option
             self.api = IQ_Option(self.email, self.password)
-            check, reason = self.api.connect()
+            
+            # Try connecting with retries
+            for attempt in range(3):
+                check, reason = self.api.connect()
+                if check:
+                    self.connected = True
+                    self.api.change_balance(self.mode)
+                    balance = self.get_balance()
+                    logger.info(f"Connected to IQ Option ({self.mode}). Balance: ${balance:.2f}")
+                    return True
+                else:
+                    logger.warning(f"Connection attempt {attempt+1}/3 failed: {reason}")
+                    time.sleep(5)
 
-            if check:
-                self.connected = True
-                self.api.change_balance(self.mode)
-                balance = self.get_balance()
-                logger.info(f"Connected to IQ Option ({self.mode}). Balance: ${balance:.2f}")
-                return True
-            else:
-                logger.error(f"Failed to connect to IQ Option: {reason}")
-                self.connected = False
-                return False
+            logger.error(f"Failed to connect to IQ Option after 3 attempts")
+            self.connected = False
+            return False
         except Exception as e:
             logger.error(f"IQ Option connection error: {e}")
             self.connected = False
             return False
 
     def reconnect(self) -> bool:
-        """Reconnect if disconnected."""
-        if self.api and self.api.check_connect():
-            return True
-        logger.warning("Connection lost. Reconnecting...")
-        return self.connect()
+        """Reconnect if disconnected, with cooldown to prevent spam."""
+        try:
+            if self.api and self.api.check_connect():
+                return True
+        except Exception:
+            pass
+
+        # Cooldown between reconnect attempts
+        now = time.time()
+        if now - self._last_reconnect < self._reconnect_cooldown:
+            return False
+
+        with self._reconnect_lock:
+            # Double-check after acquiring lock
+            try:
+                if self.api and self.api.check_connect():
+                    return True
+            except Exception:
+                pass
+
+            self._last_reconnect = now
+            logger.warning("Connection lost. Reconnecting...")
+            return self.connect()
 
     def get_balance(self) -> float:
         """Get current account balance."""
@@ -57,7 +83,7 @@ class IQOptionClient:
             return 0.0
 
     def get_candles(self, pair: str, timeframe: int, count: int) -> list:
-        """Get historical candles.
+        """Get historical candles with retry logic.
         
         Args:
             pair: Asset name (e.g., 'EURUSD-OTC')
@@ -67,25 +93,36 @@ class IQOptionClient:
         Returns:
             List of candle dicts with keys: open, close, high, low, time
         """
-        try:
-            if not self.reconnect():
-                return []
+        for attempt in range(3):
+            try:
+                if not self.reconnect():
+                    time.sleep(2)
+                    continue
 
-            candles = self.api.get_candles(pair, timeframe, count, time.time())
-            result = []
-            for c in candles:
-                result.append({
-                    "open": c["open"],
-                    "close": c["close"],
-                    "high": c["max"],
-                    "low": c["min"],
-                    "time": c["from"],
-                    "volume": c.get("volume", 0)
-                })
-            return result
-        except Exception as e:
-            logger.error(f"Error getting candles for {pair}: {e}")
-            return []
+                candles = self.api.get_candles(pair, timeframe, count, time.time())
+                
+                if not candles:
+                    time.sleep(1)
+                    continue
+                    
+                result = []
+                for c in candles:
+                    result.append({
+                        "open": c["open"],
+                        "close": c["close"],
+                        "high": c["max"],
+                        "low": c["min"],
+                        "time": c["from"],
+                        "volume": c.get("volume", 0)
+                    })
+                return result
+            except Exception as e:
+                if attempt < 2:
+                    logger.debug(f"Retry {attempt+1} getting candles for {pair}: {e}")
+                    time.sleep(2)
+                else:
+                    logger.error(f"Error getting candles for {pair} after 3 attempts: {e}")
+        return []
 
     def buy(self, pair: str, amount: float, direction: str, expiration: int) -> tuple:
         """Place a binary option trade.
@@ -105,11 +142,7 @@ class IQOptionClient:
 
             with self._lock:
                 logger.info(f"Placing {direction.upper()} on {pair} | ${amount:.2f} | Exp: {expiration}min")
-
-                if direction.lower() == "call":
-                    success, order_id = self.api.buy(amount, pair, direction, expiration)
-                else:
-                    success, order_id = self.api.buy(amount, pair, direction, expiration)
+                success, order_id = self.api.buy(amount, pair, direction, expiration)
 
                 if success:
                     logger.info(f"Order placed successfully. ID: {order_id}")
@@ -131,12 +164,20 @@ class IQOptionClient:
             if not self.reconnect():
                 return False, 0.0
 
-            # Wait for result
-            while True:
-                result = self.api.check_win_v4(order_id)
-                if result is not None:
-                    break
+            # Wait for result with timeout
+            max_wait = 120  # 2 minutes max
+            start = time.time()
+            while time.time() - start < max_wait:
+                try:
+                    result = self.api.check_win_v4(order_id)
+                    if result is not None:
+                        break
+                except Exception:
+                    pass
                 time.sleep(1)
+            else:
+                logger.warning(f"Timeout waiting for result of order {order_id}")
+                return False, 0.0
 
             if isinstance(result, (int, float)):
                 win = result > 0

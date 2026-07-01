@@ -69,7 +69,7 @@ class BaseChannel:
                     time.sleep(self.cycle)
                     continue
 
-                # Scan all pairs
+                # Scan all pairs (with delay between each to avoid API overload)
                 for pair in self.pairs:
                     if not self.running:
                         break
@@ -81,6 +81,8 @@ class BaseChannel:
                     if signal:
                         self._execute_signal(signal)
                         break  # One trade per cycle max
+
+                    time.sleep(3)  # Delay between pairs to avoid WebSocket overload
 
                 # Wait for next cycle
                 elapsed = time.time() - cycle_start
